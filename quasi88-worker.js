@@ -226,7 +226,22 @@ function makeStyle() {
   return s;
 }
 
+var diag = { ctx: "未作成", draws: 0 };
+
 function prepareCanvas(c) {
+  var origGetContext = c.getContext.bind(c);
+  c.getContext = function (type, attrs) {
+    var ctx = origGetContext(type, attrs);
+    diag.ctx = type + (ctx ? "" : "(失敗)");
+    if (ctx && !ctx.__diag) {
+      ctx.__diag = true;
+      ["drawArrays", "drawElements", "putImageData"].forEach(function (n) {
+        var f = ctx[n];
+        if (typeof f === "function") ctx[n] = function () { diag.draws++; return f.apply(this, arguments); };
+      });
+    }
+    return ctx;
+  };
   makeTarget(c, "canvas"); // addEventListener 等を上書きして自前で管理
   c.nodeName = "CANVAS";
   c.id = "canvas";
@@ -554,6 +569,17 @@ function startEmulator(extraOpt) {
 
   setInterval(syncDirs, 5000);
   setFocus(true);
+
+  // 起動直後の診断ログ(3秒おきに数回)
+  var beats = 0, lastDraws = 0;
+  var hb = setInterval(function () {
+    var d = diag.draws - lastDraws;
+    lastDraws = diag.draws;
+    log("[診断] GL=" + diag.ctx + " 描画呼び出し=" + d + "/3s" +
+      " キー待受=" + (firstWithListener("keydown", KEY_ORDER()) ? "有" : "無") +
+      " 音声=" + (Audio.node ? "有" : "無") + " ROM=" + listKind("rom").length + "個");
+    if (++beats >= 4) clearInterval(hb);
+  }, 3000);
 }
 
 /* =====================================================================
@@ -574,6 +600,12 @@ function addFiles(kind, files) {
   });
   return Promise.all(puts).then(function () { return added; });
 }
+
+self.addEventListener("error", function (e) { err("Worker例外: " + (e && e.message)); });
+self.addEventListener("unhandledrejection", function (e) {
+  var r = e && e.reason;
+  err("Worker例外: " + (r && r.message ? r.message : r));
+});
 
 self.onmessage = function (e) {
   var m = e.data || {};
