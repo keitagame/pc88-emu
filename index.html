@@ -35,7 +35,7 @@
 
       @font-face {
         font-family: "Renner";
-        src: url("https://keitagames.com/x68k/Renner.ttf") format("truetype");
+        src: url(/proxy/proxy.cgi?u=https%3A%2F%2Fkeitagames.com%2Fx68k%2FRenner.ttf) format("truetype");
         font-display: swap;
       }
 
@@ -160,11 +160,25 @@
     <header>
       <h1>PC-88</h1>
 
-      <label class="file-label" id="label-rom"
-        title="ROMファイルを選択(複数可)。N88.ROM / N88_0〜3.ROM / N88EXT0〜3.ROM / N80.ROM / DISK.ROM / KANJI1.ROM / KANJI2.ROM / FONT.ROM など。ブラウザに保存され、次回以降は選び直し不要">
-        Load ROM
-        <input id="romInput" type="file" class="file-input" multiple>
-      </label>
+      <!-- Disk Drives -->
+      <label class="file-label" id="label-disk1">Drive 1 <input id="disk1Input" type="file" class="file-input" accept=".d88,.88d,.dsk,.m3u"></label>
+      <label class="file-label" id="label-disk2">Drive 2 <input id="disk2Input" type="file" class="file-input" accept=".d88,.88d,.dsk,.m3u"></label>
+
+      <!-- BIOS ROMs -->
+      <label class="file-label" data-rom="N88.ROM">N88.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88_0.ROM">N88_0.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88_1.ROM">N88_1.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88_2.ROM">N88_2.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88_3.ROM">N88_3.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88EXT0.ROM">N88EXT0.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88EXT1.ROM">N88EXT1.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88EXT2.ROM">N88EXT2.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N88EXT3.ROM">N88EXT3.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="N80.ROM">N80.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="DISK.ROM">DISK.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="KANJI1.ROM">KANJI1.ROM <input type="file" class="file-input"></label>
+      <label class="file-label" data-rom="KANJI2.ROM">KANJI2.ROM <input type="file" class="file-input"></label>
+
       <button id="start" disabled>Start</button>
     </header>
 
@@ -178,77 +192,126 @@
         var $ = function (id) { return document.getElementById(id); };
         var statusEl = $("status");
         var startBtn = $("start");
-        var romInput = $("romInput");
-        var romLabel = $("label-rom");
         var canvas = $("screen");
 
-        var ready = false;
+        var ready = false;      // FSが使える状態
         var started = false;
+        var loadedRoms = {};    // 読み込み済みROM名
+        var disk1Path = "";
+        var disk2Path = "";
+
+        // Module.arguments は quasi88.js 読込時に参照が保持されるので、
+        // 同じ配列を後から書き換えて main に渡す
+        var mainArgs = [];
 
         function setStatus(msg, isError) {
           statusEl.textContent = msg;
           statusEl.className = isError ? "error" : "";
         }
 
-        function romList() {
-          try {
-            return Module.FS.readdir("/quasi88/ROM")
-              .filter(function (n) { return n !== "." && n !== ".."; })
-              .sort();
-          } catch (e) {
-            return [];
-          }
+        // このビルドでは Module.FS / Module.callMain は公開されていない。
+        // 公開されている FS_createPath / FS_createDataFile / FS_unlink を使う。
+        function ensureDirs() {
+          Module.FS_createPath("/", "quasi88", true, true);
+          Module.FS_createPath("/quasi88", "ROM", true, true);
+          Module.FS_createPath("/quasi88", "DISK", true, true);
+        }
+
+        function writeFile(dir, name, data) {
+          try { Module.FS_unlink(dir + "/" + name); } catch (e) {}
+          Module.FS_createDataFile(dir, name, data, true, true, true);
+        }
+
+        function baseName(p, prefix) {
+          return p.split("/").pop().replace(prefix, "");
         }
 
         function refresh() {
-          var list = romList();
           if (!ready) return;
+          var list = Object.keys(loadedRoms).sort();
+
+          document.querySelectorAll("header .file-label[data-rom]").forEach(function (label) {
+            var romName = label.getAttribute("data-rom");
+            label.childNodes[0].nodeValue = romName + (loadedRoms[romName] ? " ✓ " : " ");
+          });
+
+          $("label-disk1").childNodes[0].nodeValue =
+            disk1Path ? "Drive 1: " + baseName(disk1Path, /^drive1_/) + " ✓ " : "Drive 1 ";
+          $("label-disk2").childNodes[0].nodeValue =
+            disk2Path ? "Drive 2: " + baseName(disk2Path, /^drive2_/) + " ✓ " : "Drive 2 ";
+
           startBtn.disabled = started || list.length === 0;
           if (started) return;
+
           if (list.length === 0) {
-            setStatus("ROMを読み込んでください(Load ROM、または画面へドロップ)");
+            setStatus("ROMファイルを読み込んでください");
           } else {
-            setStatus("ROM: " + list.join(", ") + "\nStartで起動します");
+            var msg = "ROM: " + list.join(", ");
+            if (disk1Path || disk2Path) {
+              msg += "\nDISK: ";
+              if (disk1Path) msg += "[1] " + baseName(disk1Path, /^drive1_/) + " ";
+              if (disk2Path) msg += "[2] " + baseName(disk2Path, /^drive2_/) + " ";
+            }
+            msg += "\nStartで起動します";
+            setStatus(msg);
           }
         }
 
-        async function loadRoms(files) {
+        async function saveRomFile(targetName, file) {
           if (!ready) return;
           if (started) {
             setStatus("ROMを入れ替えるにはページを再読み込みしてください", true);
             return;
           }
-          var n = 0;
-          for (var i = 0; i < files.length; i++) {
-            var f = files[i];
-            var data = new Uint8Array(await f.arrayBuffer());
-            // QUASI88はファイル名の大文字小文字を区別して探すため、大文字に統一して保存
-            Module.FS.writeFile("/quasi88/ROM/" + f.name.toUpperCase(), data);
-            n++;
+          try {
+            var data = new Uint8Array(await file.arrayBuffer());
+            writeFile("/quasi88/ROM", targetName, data);
+            loadedRoms[targetName] = true;
+            refresh();
+          } catch (e) {
+            console.error(e);
+            setStatus("ROMの読み込みに失敗しました: " + (e && e.message ? e.message : e), true);
           }
-          refresh();
-          if (n) setStatus(statusEl.textContent + "\n(" + n + "個を保存しました)");
         }
 
-        romInput.addEventListener("change", function () {
-          loadRoms(romInput.files).then(function () { romInput.value = ""; });
+        async function saveDiskFile(driveNum, file) {
+          if (!ready) return;
+          if (started) {
+            setStatus("ディスクを入れ替えるにはページを再読み込みしてください", true);
+            return;
+          }
+          try {
+            var name = "drive" + driveNum + "_" + file.name;
+            var data = new Uint8Array(await file.arrayBuffer());
+            writeFile("/quasi88/DISK", name, data);
+            if (driveNum === 1) disk1Path = "/quasi88/DISK/" + name;
+            if (driveNum === 2) disk2Path = "/quasi88/DISK/" + name;
+            refresh();
+          } catch (e) {
+            console.error(e);
+            setStatus("ディスクの読み込みに失敗しました: " + (e && e.message ? e.message : e), true);
+          }
+        }
+
+        document.querySelectorAll("header .file-label[data-rom]").forEach(function (label) {
+          var targetRom = label.getAttribute("data-rom");
+          var input = label.querySelector("input");
+          input.addEventListener("change", function () {
+            if (input.files && input.files[0]) {
+              saveRomFile(targetRom, input.files[0]).then(function () { input.value = ""; });
+            }
+          });
         });
 
-        // 画面・ヘッダーへのドロップでも読み込み
-        ["dragenter", "dragover"].forEach(function (t) {
-          document.body.addEventListener(t, function (e) {
-            e.preventDefault();
-            romLabel.classList.add("drop");
-          });
+        $("disk1Input").addEventListener("change", function () {
+          if (this.files && this.files[0]) {
+            saveDiskFile(1, this.files[0]).then(function () { $("disk1Input").value = ""; });
+          }
         });
-        ["dragleave", "drop"].forEach(function (t) {
-          document.body.addEventListener(t, function (e) {
-            e.preventDefault();
-            romLabel.classList.remove("drop");
-          });
-        });
-        document.body.addEventListener("drop", function (e) {
-          if (e.dataTransfer && e.dataTransfer.files.length) loadRoms(e.dataTransfer.files);
+        $("disk2Input").addEventListener("change", function () {
+          if (this.files && this.files[0]) {
+            saveDiskFile(2, this.files[0]).then(function () { $("disk2Input").value = ""; });
+          }
         });
 
         startBtn.addEventListener("click", function () {
@@ -258,34 +321,35 @@
           startBtn.textContent = "Running";
           setStatus("起動中…(リセット・ROM入れ替えはページの再読み込み)");
           canvas.focus();
-          try {
-            // 音声(Web Audio)はこのクリック操作で解禁される
-            Module.callMain(["-romdir", "/quasi88/ROM"]);
-          } catch (e) {
-            if (e !== "unwind") {
-              console.error(e);
-              setStatus("起動に失敗しました: " + (e && e.message ? e.message : e), true);
-              return;
-            }
-          }
+
+          mainArgs.length = 0;
+          mainArgs.push("-romdir", "/quasi88/ROM");
+          if (disk1Path) mainArgs.push(disk1Path);
+          if (disk2Path) mainArgs.push(disk2Path);
+
+          // preRun で止めていた起動処理を再開 → main が mainArgs で実行される
+          Module.removeRunDependency("user-start");
           setTimeout(function () { setStatus(""); canvas.focus(); }, 1500);
         });
 
         canvas.addEventListener("click", function () { canvas.focus(); });
 
-        // quasi88.js が読み込む Module(スクリプトより前に定義する)
         window.Module = {
           canvas: canvas,
+          arguments: mainArgs,
           print: function (t) { console.log(t); },
           printErr: function (t) { console.warn(t); },
           onAbort: function (what) { setStatus("エミュレータが停止しました: " + what, true); },
-          onRuntimeInitialized: function () {
+          // ROM/ディスクを入れるまで main の実行を止めておく
+          preRun: [function () {
+            Module.addRunDependency("user-start");
+            ensureDirs();
             ready = true;
             refresh();
-          }
+          }]
         };
       })();
     </script>
-    <script src="./quasi88.js"></script>
+    <script src="quasi88.js"></script>
   </body>
 </html>
