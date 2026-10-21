@@ -523,7 +523,11 @@ function startEmulator(extraOpt) {
     canvas: canvas,
     arguments: args,
     print: function (t) { log(t); },
-    printErr: function (t) { err(t); },
+    printErr: function (t) {
+      // SDL2 初期化時に必ず出る無害な警告は通常ログ扱いにする
+      if (/emscripten_set_main_loop_timing: Cannot set timing mode/.test(String(t))) log(t);
+      else err(t);
+    },
     preRun: [function () { materializeAll(); }],
     onAbort: function (w) { err("Abort: " + w); },
     onExit: function (c) { status("エミュレータが終了しました (code " + c + ")", c !== 0); },
