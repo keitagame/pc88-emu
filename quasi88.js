@@ -8609,6 +8609,11 @@ var stringToUTF8Array = (str, heap, outIdx, maxBytesToWrite) => {
   var _emscripten_set_keyup_callback_on_thread = (target, userData, useCapture, callbackfunc, targetThread) =>
       registerKeyEventCallback(target, userData, useCapture, callbackfunc, 3, 'keyup', targetThread);
 
+  var _emscripten_set_main_loop = (func, fps, simulateInfiniteLoop) => {
+      var iterFunc = (() => dynCall_v(func));
+      setMainLoop(iterFunc, fps, simulateInfiniteLoop);
+    };
+
   
   
   
@@ -10631,6 +10636,8 @@ var wasmImports = {
   emscripten_set_keypress_callback_on_thread: _emscripten_set_keypress_callback_on_thread,
   /** @export */
   emscripten_set_keyup_callback_on_thread: _emscripten_set_keyup_callback_on_thread,
+  /** @export */
+  emscripten_set_main_loop: _emscripten_set_main_loop,
   /** @export */
   emscripten_set_mousedown_callback_on_thread: _emscripten_set_mousedown_callback_on_thread,
   /** @export */
