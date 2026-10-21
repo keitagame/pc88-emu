@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>PC-88 (Worker)</title>
+    <meta name="viewport" content="width=1000" />
+    <meta property="og:title" content="PC-88" />
+    <meta property="og:description" content="ブラウザ上のPC-8801 (Web Worker版)" />
+    <meta property="og:type" content="website" />
+    <style>
+      :root {
+        color-scheme: light dark;
+
+        /* デフォルト（ダークモード） */
+        --bg-color: rgb(0, 0, 0);
+        --text-color: rgb(255, 255, 255);
+        --border-color: rgb(255, 255, 255);
+        --hover-bg: #222222;
+        --status-error-color: #ff8e8e;
+        --canvas-border: #000000;
+        --canvas-focus-border: #333333;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg-color: #f5f5f7;
+          --text-color: #1d1d1f;
+          --border-color: #1d1d1f;
+          --hover-bg: #e0e0e5;
+          --status-error-color: #d32f2f;
+          --canvas-border: #cccccc;
+          --canvas-focus-border: #666666;
+        }
+      }
+
+      @font-face {
+        font-family: "Renner";
+        src: url("https://keitagames.com/x68k/Renner.ttf") format("truetype");
+        font-display: swap;
+      }
+
+      body {
+        background: var(--bg-color);
+        color: var(--text-color);
+        font-family: "Renner", "Hiragino Sans", "Yu Gothic", sans-serif;
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      h1 {
+        font-weight: 300;
+        font-size: 25px;
+      }
+
+      header {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        overflow-x: auto;
+        overflow-y: hidden;
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+        padding: 0 12px;
+      }
+
+      header > * {
+        flex-shrink: 0;
+      }
+
+      canvas {
+        /* PC-88の画面640x400 + QUASI88のステータスバー20px */
+        aspect-ratio: 32 / 21;
+        width: min(100%, calc((100vh - 130px) * 1.5238));
+        height: auto;
+        border: 1px solid var(--canvas-border);
+        background: #000;
+        outline: none;
+        image-rendering: pixelated;
+      }
+
+      canvas:focus {
+        border-color: var(--canvas-focus-border);
+      }
+
+      .row {
+        padding-top: 0px;
+        flex: 1;
+        min-height: 0;
+        justify-content: center;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        background: var(--bg-color);
+      }
+
+      #screenWrap {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        line-height: 0;
+      }
+
+      button,
+      .file-label {
+        font-family: "Renner", "Hiragino Sans", "Yu Gothic", sans-serif;
+        padding: 10px 16px;
+        background: var(--bg-color);
+        color: var(--text-color);
+        border: 1px solid var(--border-color);
+        border-radius: 0px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 0.2s, color 0.2s, border-color 0.2s;
+      }
+
+      button:hover,
+      .file-label:hover {
+        background: var(--hover-bg);
+      }
+
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .file-label {
+        display: inline-block;
+      }
+
+      .file-label.drop {
+        background: var(--hover-bg);
+      }
+
+      .file-input {
+        display: none;
+      }
+
+      #status {
+        flex: none;
+        padding: 4px 12px;
+        font-size: 14px;
+        opacity: 0.7;
+        min-height: 1.4em;
+        white-space: pre-wrap;
+      }
+
+      #status.error {
+        color: var(--status-error-color);
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>PC-88</h1>
+
+      <label
+        class="file-label"
+        id="label-rom"
+        title="ROMファイルを選択(複数可)。N88.ROM / N88_0〜3.ROM / N88EXT0〜3.ROM / N80.ROM / DISK.ROM / KANJI1.ROM / KANJI2.ROM / FONT.ROM など。"
+      >
+        Load ROM
+        <input id="romInput" type="file" class="file-input" multiple />
+      </label>
+      <label
+        class="file-label"
+        id="label-disk"
+        title="ディスクイメージ(.d88 .d77 .88d .2d など、複数可)。起動前なら先頭2枚がDrive1/2に入ります。起動後はF12メニューのDriveから選択。"
+      >
+        Load Disk
+        <input id="diskInput" type="file" class="file-input" multiple />
+      </label>
+      <button id="start" disabled>Start</button>
+      <button id="clear" title="保存済みのROM・ディスク・ステートを全て削除します">Clear Data</button>
+    </header>
+
+    <div class="row" id="stage">
+      <div id="screenWrap">
+        <canvas id="canvas" width="640" height="420" tabindex="0"></canvas>
+      </div>
+    </div>
+    <div id="status">準備中…</div>
+
+    <script>
+      (function () {
+        var $ = function (id) { return document.getElementById(id); };
+        var statusEl = $("status");
+        var startBtn = $("start");
+        var romInput = $("romInput");
+        var romLabel = $("label-rom");
+        var canvas = $("canvas");
+
+        var ready = false;
+        var started = false;
+        var romList = [];
+        var diskList = [];
+
+        var logLines = [];
+        function pushLog(t, isErr) {
+          console.log(String(t));
+          logLines.push(String(t));
+          if (logLines.length > 8) logLines.shift();
+          if (started) setStatus(logLines.join("\n"), isErr);
+        }
+
+        function setStatus(msg, isError) {
+          statusEl.textContent = msg;
+          statusEl.className = isError ? "error" : "";
+        }
+
+        function refresh() {
+          if (!ready) return;
+          startBtn.disabled = started || romList.length === 0;
+          if (started) return;
+          if (romList.length === 0) {
+            setStatus("ROMを読み込んでください(Load ROM、または画面へドロップ)");
+          } else {
+            setStatus("ROM: " + romList.join(", ") +
+              (diskList.length ? "\nDisk: " + diskList.join(", ") : "") +
+              "\nStartで起動します");
+          }
+        }
+
+        // Web Worker の起動
+        var worker = new Worker("quasi88-worker.js");
+
+        // ---- 音声: AudioContext + AudioWorklet (Worker からは MessageChannel で直接PCMを受ける) ----
+        var audioCtx = null;
+        try {
+          var AC = window.AudioContext || window.webkitAudioContext;
+          if (AC) audioCtx = new AC({ latencyHint: "interactive" });
+        } catch (e) { audioCtx = null; }
+
+        function setupAudio() {
+          if (!audioCtx || !audioCtx.audioWorklet) return;
+          var code =
+            "class Q88 extends AudioWorkletProcessor{" +
+            "constructor(){super();this.q=[];this.off=0;this.queued=0;this.played=0;this.n=0;this.wp=null;" +
+            "this.port.onmessage=(e)=>{if(e.data&&e.data.port){this.wp=e.data.port;this.wp.onmessage=(ev)=>{" +
+            "var d=ev.data;if(!d||!d.pcm)return;this.q.push(d);this.queued+=d.frames;" +
+            "var cap=sampleRate*0.6;while(this.queued>cap&&this.q.length>1){var o=this.q.shift();" +
+            "var dr=o.frames-this.off;this.off=0;this.queued-=dr;this.played+=dr;}" +
+            "};}};}" +
+            "process(inputs,outputs){var out=outputs[0];var L=out[0],R=out[1]||out[0];var n=L.length;var i=0;" +
+            "while(i<n&&this.q.length){var c=this.q[0];var ch=c.channels;var avail=c.frames-this.off;var take=Math.min(avail,n-i);" +
+            "for(var k=0;k<take;k++){var b=(this.off+k)*ch;L[i+k]=c.pcm[b];R[i+k]=ch>1?c.pcm[b+1]:c.pcm[b];}" +
+            "i+=take;this.off+=take;this.queued-=take;this.played+=take;" +
+            "if(this.off>=c.frames){this.q.shift();this.off=0;}}" +
+            "for(;i<n;i++){L[i]=0;R[i]=0;}" +
+            "if(this.wp&&(++this.n&3)===0)this.wp.postMessage({played:this.played});return true;}}" +
+            "registerProcessor('q88',Q88);";
+          var url = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
+          audioCtx.audioWorklet.addModule(url).then(function () {
+            var node = new AudioWorkletNode(audioCtx, "q88", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+            node.connect(audioCtx.destination);
+            var ch = new MessageChannel();
+            node.port.postMessage({ port: ch.port1 }, [ch.port1]);
+            worker.postMessage({ type: "audioPort", port: ch.port2, sampleRate: audioCtx.sampleRate }, [ch.port2]);
+          }).catch(function (e) { console.log("AudioWorklet初期化失敗: " + e); });
+        }
+        function resumeAudio() {
+          if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+        }
+
+        // Canvas の描画権限を OffscreenCanvas として Worker へ転送
+        var offscreen = canvas.transferControlToOffscreen();
+        worker.postMessage({
+          type: "init",
+          canvas: offscreen,
+          sampleRate: audioCtx ? audioCtx.sampleRate : 48000,
+          screenInfo: {
+            width: window.screen.width,
+            height: window.screen.height,
+            availWidth: window.screen.availWidth,
+            availHeight: window.screen.availHeight,
+            colorDepth: window.screen.colorDepth,
+            pixelDepth: window.screen.pixelDepth
+          }
+        }, [offscreen]);
+        setupAudio();
+
+        // Worker からのメッセージ受信
+        worker.onmessage = function (e) {
+          var msg = e.data;
+          switch (msg.type) {
+            case "ready":
+              ready = true;
+              refresh();
+              break;
+            case "romList":
+              romList = msg.list;
+              refresh();
+              if (msg.addedCount) {
+                setStatus(statusEl.textContent + "\n(" + msg.addedCount + "個を保存しました)");
+              }
+              break;
+            case "diskList":
+              diskList = msg.list;
+              refresh();
+              break;
+            case "cursor":
+              canvas.style.cursor = msg.value;
+              break;
+            case "cleared":
+              location.reload();
+              break;
+            case "status":
+              setStatus(msg.text, msg.isError);
+              break;
+            case "log":
+              pushLog(msg.text, false);
+              break;
+            case "err":
+              pushLog(msg.text, true);
+              break;
+          }
+        };
+
+        function isRom(name) { return /\.ROM$/i.test(name); }
+
+        async function readFiles(files, upper) {
+          var data = [], transfers = [];
+          for (var i = 0; i < files.length; i++) {
+            var f = files[i];
+            var buffer = await f.arrayBuffer();
+            data.push({ name: upper ? f.name.toUpperCase() : f.name, buffer: buffer });
+            transfers.push(buffer);
+          }
+          return { data: data, transfers: transfers };
+        }
+
+        async function loadRoms(files) {
+          if (!ready) return;
+          if (started) {
+            setStatus("ROMを入れ替えるにはページを再読み込みしてください", true);
+            return;
+          }
+          var r = await readFiles(files, true);
+          // ROMデータを高速に Worker へ転送 (Transferable Objects)
+          worker.postMessage({ type: "loadRoms", files: r.data }, r.transfers);
+        }
+
+        async function loadDisks(files) {
+          if (!ready) return;
+          var r = await readFiles(files, false);
+          worker.postMessage({ type: "loadDisks", files: r.data }, r.transfers);
+        }
+
+        // 拡張子で ROM / ディスクを振り分け
+        async function loadAny(fileList) {
+          var roms = [], disks = [];
+          for (var i = 0; i < fileList.length; i++) {
+            (isRom(fileList[i].name) ? roms : disks).push(fileList[i]);
+          }
+          if (roms.length) await loadRoms(roms);
+          if (disks.length) await loadDisks(disks);
+        }
+
+        romInput.addEventListener("change", function () {
+          loadAny(romInput.files).then(function () { romInput.value = ""; });
+        });
+        var diskInput = $("diskInput");
+        diskInput.addEventListener("change", function () {
+          loadDisks(diskInput.files).then(function () { diskInput.value = ""; });
+        });
+        $("clear").addEventListener("click", function () {
+          if (confirm("保存済みのROM・ディスク・ステートを全て削除しますか?")) worker.postMessage({ type: "clearAll" });
+        });
+
+        // ドラッグ＆ドロップ対応
+        ["dragenter", "dragover"].forEach(function (t) {
+          document.body.addEventListener(t, function (e) {
+            e.preventDefault();
+            romLabel.classList.add("drop");
+          });
+        });
+        ["dragleave", "drop"].forEach(function (t) {
+          document.body.addEventListener(t, function (e) {
+            e.preventDefault();
+            romLabel.classList.remove("drop");
+          });
+        });
+        document.body.addEventListener("drop", function (e) {
+          if (e.dataTransfer && e.dataTransfer.files.length) loadAny(e.dataTransfer.files);
+        });
+
+        // キーボード入力イベントを Worker へ転送
+        function sendKeyEvent(type, e) {
+          if (!started) return;
+          worker.postMessage({
+            type: "keyEvent",
+            keyType: type,
+            event: {
+              key: e.key,
+              code: e.code,
+              keyCode: e.keyCode,
+              which: e.which,
+              shiftKey: e.shiftKey,
+              ctrlKey: e.ctrlKey,
+              altKey: e.altKey,
+              metaKey: e.metaKey,
+              repeat: e.repeat
+            }
+          });
+        }
+
+        window.addEventListener("keydown", function (e) {
+          if (document.activeElement === canvas) {
+            sendKeyEvent("keydown", e);
+            resumeAudio();
+            // エミュレータ操作中のスクロール・ブラウザ動作(F5/F12/Tab/Backspace等)を防止
+            if (!e.metaKey && !(e.ctrlKey && /^Key[A-Z]$/.test(e.code))) e.preventDefault();
+          }
+        });
+
+        window.addEventListener("keyup", function (e) {
+          if (document.activeElement === canvas) {
+            sendKeyEvent("keyup", e);
+          }
+        });
+
+        canvas.addEventListener("click", function () { canvas.focus(); resumeAudio(); });
+        canvas.addEventListener("focus", function () { worker.postMessage({ type: "focus", focused: true }); });
+        canvas.addEventListener("blur", function () { worker.postMessage({ type: "focus", focused: false }); });
+
+        // マウス入力を Worker へ転送 (座標はキャンバスの内部ピクセル単位)
+        function sendMouse(type, e) {
+          if (!started) return;
+          var r = canvas.getBoundingClientRect();
+          var sx = canvas.width / (r.width || 1), sy = canvas.height / (r.height || 1);
+          worker.postMessage({
+            type: "mouseEvent",
+            mouseType: type,
+            x: (e.clientX - r.left) * sx,
+            y: (e.clientY - r.top) * sy,
+            screenX: e.screenX, screenY: e.screenY,
+            button: e.button, buttons: e.buttons,
+            movementX: (e.movementX || 0) * sx, movementY: (e.movementY || 0) * sy,
+            ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
+            deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ, deltaMode: e.deltaMode
+          });
+        }
+        ["mousemove", "mousedown", "mouseup", "mouseenter", "mouseleave"].forEach(function (t) {
+          canvas.addEventListener(t, function (e) { sendMouse(t, e); });
+        });
+        canvas.addEventListener("wheel", function (e) { sendMouse("wheel", e); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+
+        startBtn.addEventListener("click", function () {
+          if (!ready || started) return;
+          started = true;
+          startBtn.disabled = true;
+          startBtn.textContent = "Running";
+          setStatus("起動中…(リセット・ROM入れ替えはページの再読み込み)");
+          resumeAudio();
+          canvas.focus();
+
+          var extra = new URLSearchParams(location.search).get("opt");
+          worker.postMessage({
+            type: "start",
+            extraOpt: extra
+          });
+        });
+
+        window.addEventListener("error", function (e) { console.log("エラー: " + e.message);pushLog("エラー: " + e.message, true); });
+        window.addEventListener("unhandledrejection", function (e) {
+          console.log("エラー: " + e.reason);pushLog("エラー: " + (e.reason && e.reason.message ? e.reason.message : e.reason), true);
+        });
+      })();
+    </script>
+  </body>
+</html>
