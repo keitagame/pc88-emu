@@ -16,6 +16,10 @@
  * ===================================================================== */
 "use strict";
 
+/* glue(quasi88.js)がグローバルに err / out / FS 等を宣言するため、
+ * こちらの名前が上書きされないよう全体をスコープで隔離する */
+(function () {
+
 /* ---------- 設定 ---------- */
 var GLUE_CANDIDATES = ["quasi88.js", "quasi88__4_.js"]; // Emscripten が出力した JS
 var DB_NAME = "quasi88-web";
@@ -630,3 +634,5 @@ self.onmessage = function (e) {
       break;
   }
 };
+
+})();
